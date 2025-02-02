@@ -13,6 +13,9 @@ bot_token = "7535985391:AAEfjYY3Z79OvPgQCn3rKZ192jAED9dzeHQ"
 
 app = Client("my_uploader", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
 
+# Increase the chunk size to 1MB (1024 * 1024 bytes)
+CHUNK_SIZE = 1024 * 1024  # 1MB
+
 async def download_file(url, filename, msg):
     os.makedirs("downloads", exist_ok=True)  # Ensure downloads directory exists
 
@@ -25,23 +28,21 @@ async def download_file(url, filename, msg):
             total_size = int(response.headers.get('content-length', 0))
             downloaded = 0
             start_time = time.time()
-
+            
             try:
                 with open(filename, 'wb') as f:
-                    # Increased chunk size to 64 KB
-                    async for chunk in response.content.iter_chunked(65536):  # 64 KB
+                    async for chunk in response.content.iter_chunked(CHUNK_SIZE):
                         if not chunk:
                             await msg.edit("❌ Received an empty data chunk. Retrying...")
                             return
                         f.write(chunk)
                         downloaded += len(chunk)
-
-                        # Calculate speed more frequently
-                        elapsed_time = time.time() - start_time
-                        if elapsed_time > 0:
-                            speed = downloaded / elapsed_time  # bytes per second
+                        
+                        elapsed = time.time() - start_time
+                        if elapsed >= 1 or downloaded == total_size:
+                            speed = downloaded / elapsed if elapsed > 0 else 0
                             await update_download_progress(msg, downloaded, total_size, speed)
-
+                            start_time = time.time()
             except Exception as e:
                 await msg.edit(f"❌ Error writing file: {str(e)}")
 
@@ -61,8 +62,8 @@ async def upload_with_progress(client, msg, filename):
     async def progress(current, total, msg):
         nonlocal uploaded, start_time
         uploaded = current
-        elapsed_time = time.time() - start_time
-        speed = current / elapsed_time if elapsed_time > 0 else 0
+        elapsed = time.time() - start_time
+        speed = current / elapsed if elapsed > 0 else 0
         
         progress_text = f"📤 Uploading:\n"
         progress_text += f"┌ {naturalsize(current)} / {naturalsize(total)}\n"
@@ -107,12 +108,11 @@ async def handle_url(client, message):
                 return
             
             filename = info_dict.get('title', 'file').replace(' ', '_')
-            
-            # Ensure MP4 extension for video files
-            if 'ext' in info_dict and info_dict['ext'] == 'mp4':
-                filename = f"downloads/{filename}.mp4"
+            if 'ext' in info_dict:
+                filename += f".{info_dict['ext']}"
             else:
-                filename = f"downloads/{filename}.mp4"  # default to MP4 for videos
+                filename += ".mp4"  # Default to mp4 if extension is not available
+            filename = f"downloads/{filename}"
 
         # Start download
         msg = await message.reply("🚀 Starting download...")
