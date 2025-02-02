@@ -5,3 +5,5 @@ yt-dlp
 humanize
 flask
 gunicorn
+asyncio
+tgcrypto
