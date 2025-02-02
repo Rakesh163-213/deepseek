@@ -25,7 +25,7 @@ async def download_file(url, filename, msg):
             total_size = int(response.headers.get('content-length', 0))
             downloaded = 0
             start_time = time.time()
-            
+
             try:
                 with open(filename, 'wb') as f:
                     async for chunk in response.content.iter_chunked(8192):
@@ -34,12 +34,13 @@ async def download_file(url, filename, msg):
                             return
                         f.write(chunk)
                         downloaded += len(chunk)
-                        
-                        elapsed = time.time() - start_time
-                        if elapsed > 5 or downloaded == total_size:
-                            speed = downloaded / elapsed if elapsed > 0 else 0
+
+                        # Calculate speed more frequently
+                        elapsed_time = time.time() - start_time
+                        if elapsed_time > 0:
+                            speed = downloaded / elapsed_time  # bytes per second
                             await update_download_progress(msg, downloaded, total_size, speed)
-                            start_time = time.time()
+
             except Exception as e:
                 await msg.edit(f"❌ Error writing file: {str(e)}")
 
@@ -56,11 +57,11 @@ async def upload_with_progress(client, msg, filename):
     uploaded = 0
     start_time = time.time()
 
-    async def progress(current, total, msg):  # ✅ Fix: Accept msg as an extra argument
+    async def progress(current, total, msg):
         nonlocal uploaded, start_time
         uploaded = current
-        elapsed = time.time() - start_time
-        speed = current / elapsed if elapsed > 0 else 0
+        elapsed_time = time.time() - start_time
+        speed = current / elapsed_time if elapsed_time > 0 else 0
         
         progress_text = f"📤 Uploading:\n"
         progress_text += f"┌ {naturalsize(current)} / {naturalsize(total)}\n"
@@ -75,8 +76,8 @@ async def upload_with_progress(client, msg, filename):
         chat_id=msg.chat.id,
         document=filename,
         force_document=True,
-        progress=progress,  # ✅ Fix: Pass correct progress function
-        progress_args=(msg,)  # ✅ Fix: Correct number of arguments
+        progress=progress,  
+        progress_args=(msg,)  
     )
 
 @app.on_message(filters.command("start"))
@@ -104,8 +105,13 @@ async def handle_url(client, message):
                 await message.reply("❌ File size exceeds 2GB limit.")
                 return
             
-            filename = info_dict.get('title', 'file').replace(' ', '_') + ".mp4"
-            filename = f"downloads/{filename}"
+            filename = info_dict.get('title', 'file').replace(' ', '_')
+            
+            # Ensure MP4 extension for video files
+            if 'ext' in info_dict and info_dict['ext'] == 'mp4':
+                filename = f"downloads/{filename}.mp4"
+            else:
+                filename = f"downloads/{filename}.mp4"  # default to MP4 for videos
 
         # Start download
         msg = await message.reply("🚀 Starting download...")
