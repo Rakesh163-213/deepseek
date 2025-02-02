@@ -28,7 +28,8 @@ async def download_file(url, filename, msg):
 
             try:
                 with open(filename, 'wb') as f:
-                    async for chunk in response.content.iter_chunked(8192):
+                    # Increased chunk size to 64 KB
+                    async for chunk in response.content.iter_chunked(65536):  # 64 KB
                         if not chunk:
                             await msg.edit("❌ Received an empty data chunk. Retrying...")
                             return
