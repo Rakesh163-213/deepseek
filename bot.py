@@ -1,257 +1,214 @@
-from pyrogram import Client, filters, enums
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-import yt_dlp
 import os
-import ffmpeg
-import shutil
+import re
+import logging
+import sqlite3
+import asyncio
 import time
-from threading import Thread
-from math import floor
-from datetime import datetime
+from config import API_ID, API_HASH, BOT_TOKEN, LOG_CHANNEL, ADMINS
 
-# Telegram bot credentials
-API_ID = '20967612'
-API_HASH = 'be9356a3644d1e6212e72d93530b434f'
-BOT_TOKEN = '7535985391:AAEfjYY3Z79OvPgQCn3rKZ192jAED9dzeHQ'
+from pyrogram import Client, filters
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from yt_dlp import YoutubeDL
+from pathlib import Path
+import requests
+import humanize
+import shutil
 
-app = Client("url_uploader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
-# Global variables for tracking progress
-progress_data = {}
-download_speeds = {}
+# Database setup
+conn = sqlite3.connect('userdata.db')
+c = conn.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS users
+             (user_id INTEGER PRIMARY KEY, thumbnail TEXT)''')
+conn.commit()
 
-# Thumbnail management
-THUMBNAIL_PATH = 'thumbnail.jpg'
+app = Client("url_upload_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Command to set custom thumbnail
-@app.on_message(filters.command("setthumbnail"))
-async def set_thumbnail(client, message: Message):
-    if message.reply_to_message and (message.reply_to_message.photo or message.reply_to_message.document):
-        try:
-            await message.reply_to_message.download(file_name=THUMBNAIL_PATH)
-            await message.reply("✅ Custom thumbnail set successfully!", parse_mode=enums.ParseMode.MARKDOWN)
-        except Exception as e:
-            await message.reply(f"❌ Error setting thumbnail: {str(e)}")
-    else:
-        await message.reply("ℹ️ Please reply to a photo or document to set as thumbnail")
+# Global variables
+SPLIT_SIZE = 2 * 1024 * 1024 * 1024 - 10485760  # 2GB minus 10MB buffer
+DOWNLOAD_DIR = "downloads"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# Command to delete custom thumbnail
-@app.on_message(filters.command("delthumbnail"))
-async def delete_thumbnail(client, message: Message):
-    if os.path.exists(THUMBNAIL_PATH):
-        os.remove(THUMBNAIL_PATH)
-        await message.reply("✅ Custom thumbnail deleted!")
-    else:
-        await message.reply("ℹ️ No custom thumbnail found!")
+async def progress(current, total, message, start_time):
+    if total in (0, None):
+        return  # Avoid division by zero errors
+    
+    percentage = current * 100 / total
+    speed = current / (time.time() - start_time)
+    eta = (total - current) / speed if speed != 0 else 0
+    
+    progress_bar = "[{0}{1}]".format(
+        '■' * int(percentage / 5),
+        '□' * (20 - int(percentage / 5))
+    )
+    
+    text = (
+        f"Progress: {progress_bar}\n"
+        f"Size: {humanize.naturalsize(current)} / {humanize.naturalsize(total)}\n"
+        f"Speed: {humanize.naturalsize(speed)}/s\n"
+        f"ETA: {humanize.precisedelta(eta)}"
+    )
+    
+    try:
+        await message.edit_text(text)
+    except Exception as e:
+        logger.warning(f"Progress update failed: {str(e)}")
 
-# Start command
-@app.on_message(filters.command("start"))
-async def start_command(client, message: Message):
-    await message.reply(
-        "📥 Welcome to YouTube Downloader Bot!\n\n"
-        "Send me a YouTube URL to get started.\n\n"
-        "🛠 Commands:\n"
+@app.on_message(filters.command(["start"]))
+async def start(client, message):
+    await message.reply_text(
+        "**Hi! I'm URL Upload Bot**\n"
+        "Send me any HTTP/HTTPS link to upload content!\n\n"
+        "**Commands:**\n"
         "/setthumbnail - Set custom thumbnail\n"
         "/delthumbnail - Delete thumbnail\n"
-        "/help - Show help information"
+        "/logchannel - Set log channel (admin only)"
     )
 
-# Help command
-@app.on_message(filters.command("help"))
-async def help_command(client, message: Message):
-    await message.reply(
-        "ℹ️ **Bot Help**\n\n"
-        "1. Send any YouTube URL\n"
-        "2. Choose desired format\n"
-        "3. Wait for download & upload\n\n"
-        "🖼 Thumbnail Support:\n"
-        "- Reply to an image with /setthumbnail\n"
-        "- Use /delthumbnail to remove\n\n"
-        "⚡ Features:\n"
-        "- 2GB+ file splitting\n"
-        "- Progress tracking\n"
-        "- Quality selection\n"
-        "- Audio extraction"
-    )
+@app.on_message(filters.command(["setthumbnail"]))
+async def set_thumbnail(client, message):
+    user_id = message.from_user.id
+    if message.reply_to_message and message.reply_to_message.photo:
+        thumbnail_path = f"thumbnails/{user_id}.jpg"
+        os.makedirs(os.path.dirname(thumbnail_path), exist_ok=True)
+        await message.reply_to_message.download(thumbnail_path)
+        c.execute("INSERT OR REPLACE INTO users VALUES (?, ?)", (user_id, thumbnail_path))
+        conn.commit()
+        await message.reply_text("Thumbnail set successfully!")
+    else:
+        await message.reply_text("Please reply to a photo to set as thumbnail")
 
-# Progress handler for downloads
-async def download_progress_hook(d, message, start_time):
-    global progress_data, download_speeds
-    if d['status'] == 'downloading':
-        chat_id = message.chat.id
-        downloaded = d.get('downloaded_bytes', 0)
-        total = d.get('total_bytes', 0) or d.get('total_bytes_estimate', 0)
-        speed = d.get('speed', 0)
-        elapsed = time.time() - start_time
-        
-        # Calculate progress
-        percent = (downloaded / total) * 100 if total else 0
-        progress = "▓" * int(percent // 5) + "░" * (20 - int(percent // 5))
-        
-        # Calculate speed and ETA
-        speed = f"{speed / 1024 / 1024:.2f} MB/s" if speed else "N/A"
-        eta = (total - downloaded) / (d['speed'] + 1) if d.get('speed') else 0
-        eta_str = str(datetime.utcfromtimestamp(eta).strftime('%H:%M:%S')) if eta else "N/A"
-        
-        # Update progress message every 5 seconds
-        current_time = time.time()
-        if chat_id not in progress_data or current_time - progress_data[chat_id]['last_update'] >= 5:
-            try:
-                await message.edit_text(
-                    f"**Downloading:**\n"
-                    f"`{progress}` {percent:.2f}%\n"
-                    f"**Size:** {downloaded/1024/1024:.2f}MB / {total/1024/1024:.2f}MB\n"
-                    f"**Speed:** {speed}\n"
-                    f"**ETA:** {eta_str}"
-                )
-                progress_data[chat_id] = {'last_update': current_time}
-            except:
-                pass
+@app.on_message(filters.command(["delthumbnail"]))
+async def del_thumbnail(client, message):
+    user_id = message.from_user.id
+    c.execute("DELETE FROM users WHERE user_id=?", (user_id,))
+    conn.commit()
+    await message.reply_text("Thumbnail deleted successfully!")
 
-# Enhanced download function with progress tracking
-def download_media(url, format_id, message):
-    chat_id = message.chat.id
-    msg = None
-    try:
-        # Create downloads directory
-        os.makedirs('downloads', exist_ok=True)
-        
-        # Get format information
-        ydl_opts = {
-            'format': format_id,
-            'outtmpl': 'downloads/%(title)s.%(ext)s',
-            'progress_hooks': [lambda d: download_progress_hook(d, msg, start_time)],
-            'noplaylist': True,
-            'quiet': True,
+def get_user_thumbnail(user_id):
+    c.execute("SELECT thumbnail FROM users WHERE user_id=?", (user_id,))
+    result = c.fetchone()
+    return result[0] if result else None
+
+def split_file(file_path):
+    split_files = []
+    part_num = 1
+    with open(file_path, 'rb') as f:
+        while True:
+            chunk = f.read(SPLIT_SIZE)
+            if not chunk:
+                break
+            part_file = f"{file_path}.part{part_num:03d}"
+            with open(part_file, 'wb') as p:
+                p.write(chunk)
+            split_files.append(part_file)
+            part_num += 1
+    return split_files
+
+async def download_content(url, message):
+    ydl_opts = {
+        'outtmpl': f'{DOWNLOAD_DIR}/%(title)s.%(ext)s',
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': False,
+        'force_generic_extractor': True,
+        'cookiefile': 'cookies.txt',
+        'referer': url,
+        'nocheckcertificate': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': '*/*',
         }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            file_path = ydl.prepare_filename(info)
-            
-        return file_path
-
-    except Exception as e:
-        app.send_message(chat_id, f"❌ Download failed: {str(e)}")
-        return None
-
-# Upload progress callback
-async def upload_progress(current, total, message, start_time):
-    percent = (current / total) * 100
-    progress = "▓" * int(percent // 5) + "░" * (20 - int(percent // 5))
-    elapsed = time.time() - start_time
-    speed = current / elapsed / 1024 / 1024 if elapsed > 0 else 0
-    eta = (total - current) / (speed * 1024 * 1024 + 1) if speed > 0 else 0
+    }
     
     try:
-        await message.edit_text(
-            f"**Uploading:**\n"
-            f"`{progress}` {percent:.2f}%\n"
-            f"**Sent:** {current/1024/1024:.2f}MB / {total/1024/1024:.2f}MB\n"
-            f"**Speed:** {speed:.2f} MB/s\n"
-            f"**ETA:** {datetime.utcfromtimestamp(eta).strftime('%H:%M:%S')}"
-        )
-    except:
-        pass
-
-# Main processing function
-def process_media(url, format_id, message):
-    chat_id = message.chat.id
-    try:
-        # Start download
-        file_path = download_media(url, format_id, message)
-        if not file_path:
-            return
-
-        # Split video if needed
-        if os.path.getsize(file_path) > 2 * 1024 * 1024 * 1024:
-            file_path = split_video(file_path)
-
-        # Prepare thumbnail
-        thumbnail = THUMBNAIL_PATH if os.path.exists(THUMBNAIL_PATH) else None
-
-        # Start upload with progress
-        start_time = time.time()
-        msg = app.send_message(chat_id, "📤 Starting upload...")
-        
-        app.send_video(
-            chat_id=chat_id,
-            video=file_path,
-            caption=os.path.basename(file_path),
-            thumb=thumbnail,
-            progress=lambda current, total: upload_progress(current, total, msg, start_time)
-        )
-
-        # Cleanup
-        os.remove(file_path)
-        app.delete_messages(chat_id, msg.id)
-
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            filename = ydl.prepare_filename(info)
+            await message.edit_text(f"Downloading: {os.path.basename(filename)}")
+            ydl.download([url])
+            return filename
     except Exception as e:
-        app.send_message(chat_id, f"❌ Error: {str(e)}")
+        raise Exception(f"Download failed: {str(e)}")
 
-# Video splitting function
-def split_video(input_path):
-    output_dir = 'downloads/split_videos'
-    os.makedirs(output_dir, exist_ok=True)
-    output_template = os.path.join(output_dir, 'part_%03d.mp4')
-    
-    (
-        ffmpeg
-        .input(input_path)
-        .output(output_template, segment_time=1800, f='segment', reset_timestamps=1)
-        .run(quiet=True)
-    )
-    
-    os.remove(input_path)
-    return os.path.join(output_dir, 'part_001.mp4')
-
-# Format selection handler
-@app.on_callback_query()
-async def handle_format_selection(client, callback_query: CallbackQuery):
-    await callback_query.answer()
-    url = callback_query.message.reply_to_message.text
-    format_id = callback_query.data
-    
-    # Delete format selection message
-    await callback_query.message.delete()
-    
-    # Start processing in a new thread
-    Thread(target=process_media, args=(url, format_id, callback_query.message)).start()
-
-# URL handler with vertical quality buttons
 @app.on_message(filters.text & filters.private & ~filters.create(lambda _, __, m: m.text.startswith("/")))
 async def handle_url(client, message: Message):
-    url = message.text
+    user_id = message.from_user.id
+    url = message.text.strip()
+    msg = await message.reply_text("Processing your request...")
+    
     try:
-        # Get available formats
-        ydl_opts = {'quiet': True, 'noplaylist': True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            formats = info.get('formats', [info])
+        # Validate URL
+        if not re.match(r'^https?://', url, re.IGNORECASE):
+            raise ValueError("Invalid URL format")
         
-        # Create vertical buttons
-        buttons = []
-        for f in reversed(formats):
-            if f.get('height'):
-                text = f"{f['format_note']} ({f['ext']}) {f['filesize']/1024/1024:.1f}MB" if 'format_note' in f else f"{f['height']}p ({f['ext']}) {f['filesize']/1024/1024:.1f}MB"
-                buttons.append([InlineKeyboardButton(text, callback_data=f['format_id'])])
+        # Download content
+        file_path = await download_content(url, msg)
         
-        # Add audio options
-        audio_formats = [f for f in formats if f['vcodec'] == 'none']
-        for f in audio_formats:
-            text = f"Audio ({f['ext']}) {f['filesize']/1024/1024:.1f}MB"
-            buttons.append([InlineKeyboardButton(text, callback_data=f['format_id'])])
+        # Validate downloaded file
+        if not os.path.exists(file_path):
+            raise FileNotFoundError("Downloaded file not found")
         
-        # Send format selection
-        await message.reply(
-            "🎬 Select format:",
-            reply_markup=InlineKeyboardMarkup(buttons),
-            reply_to_message_id=message.id
-        )
-
+        file_size = os.path.getsize(file_path)
+        if file_size == 0:
+            raise ValueError("Downloaded file is empty")
+        
+        # Split file if needed
+        files_to_upload = [file_path]
+        if file_size > SPLIT_SIZE:
+            files_to_upload = split_file(file_path)
+        
+        # Upload files
+        thumbnail = get_user_thumbnail(user_id)
+        for file in files_to_upload:
+            await client.send_document(
+                chat_id=message.chat.id,
+                document=file,
+                thumb=thumbnail,
+                caption=f"`{Path(file).name}`",
+                progress=progress,
+                progress_args=(msg, time.time())
+            )
+            os.remove(file)
+        
+        # Log to channel
+        if LOG_CHANNEL:
+            await client.forward_messages(
+                chat_id=LOG_CHANNEL,
+                from_chat_id=message.chat.id,
+                message_ids=message.message_id
+            )
+            await client.send_document(
+                chat_id=LOG_CHANNEL,
+                document=file_path,
+                caption=f"User: {message.from_user.mention}\nURL: {url}"
+            )
+        
+        await msg.delete()
+        
     except Exception as e:
-        await message.reply(f"❌ Error: {str(e)}")
+        await msg.edit_text(f"❌ Error: {str(e)}")
+        logger.error(f"Error processing {url}: {str(e)}")
+        try:
+            shutil.rmtree(DOWNLOAD_DIR)
+            os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+        except Exception as clean_err:
+            logger.error(f"Cleanup error: {str(clean_err)}")
+
+@app.on_message(filters.command(["logchannel"]) & filters.user(ADMINS))
+async def set_log_channel(client, message):
+    global LOG_CHANNEL
+    if message.chat.type == "channel":
+        LOG_CHANNEL = message.chat.id
+        await message.reply_text(f"Log channel set to {message.chat.id}")
+    else:
+        await message.reply_text("Please use this command in the channel you want to set as log channel")
 
 if __name__ == "__main__":
-    print("Bot Started!")
     app.run()
