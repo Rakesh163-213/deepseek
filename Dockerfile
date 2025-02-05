@@ -6,7 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Update package list and install ffmpeg
 RUN apt update && apt install -y ffmpeg && rm -rf /var/lib/apt/lists/*
-
+RUN pip install gunicorn
 # Set the working directory
 WORKDIR /app
 
