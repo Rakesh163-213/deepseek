@@ -8,6 +8,7 @@ import time
 from threading import Thread
 from math import floor
 from datetime import datetime
+import validators  # Added import
 
 # Telegram bot credentials
 API_ID = '20967612'
@@ -191,9 +192,20 @@ async def handle_format_selection(client, callback_query: CallbackQuery):
 # URL handler with vertical quality buttons
 @app.on_message(filters.text & filters.private)
 async def handle_url(client, message: Message):
+    # Skip processing for bot commands
+    if message.text.startswith('/'):
+        return
+
     url = message.text
+    
+    # Add URL validation
     try:
-        # Get available formats
+        # Check if URL is valid before processing
+        if not validators.url(url):
+            await message.reply("❌ Invalid URL. Please send a valid YouTube or supported URL.")
+            return
+
+        # Existing format extraction code
         ydl_opts = {'quiet': True, 'noplaylist': True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -255,3 +267,4 @@ async def help_command(client, message: Message):
 if __name__ == "__main__":
     print("Bot Started!")
     app.run()
+    
