@@ -1,7 +1,10 @@
 validators
-pyrogram
-yt-dlp
 flask
 gunicorn
 tgcrypto
 python-ffmpeg
+pyrogram>=2.0.0
+yt-dlp>=2023.7.6
+requests>=2.28.1
+humanize>=4.4.0
+python-dotenv>=0.21.0
