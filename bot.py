@@ -9,9 +9,9 @@ import time
 
 
 # Telegram bot credentials
-API_ID = 'your_api_id'
-API_HASH = 'your_api_hash'
-BOT_TOKEN = 'your_bot_token'
+API_ID = '20967612'
+API_HASH = 'be9356a3644d1e6212e72d93530b434f'
+BOT_TOKEN = '7535985391:AAEfjYY3Z79OvPgQCn3rKZ192jAED9dzeHQ'
 
 
 app = Client("url_uploader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
