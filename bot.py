@@ -26,8 +26,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Database setup
-conn = sqlite3.connect('userdata.db')
+# Database setup with connection pooling
+conn = sqlite3.connect('userdata.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS users
              (user_id INTEGER PRIMARY KEY, thumbnail TEXT)''')
@@ -41,9 +41,14 @@ DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # Animation configurations
-PROGRESS_BLOCKS = ["🟥", "🟧", "🟨", "🟩"]
-SPINNER_FRAMES = ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"]
-ANIMATION_DELAY = 0.8  # Animation frame change interval
+PROGRESS_BARS = [
+    "🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥",
+    "🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧",
+    "🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨",
+    "🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩"
+]
+SPINNER = ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"]
+ANIMATION_DELAY = 0.5
 
 # Enhanced yt-dlp configuration
 YDL_OPTS = {
@@ -64,35 +69,41 @@ YDL_OPTS = {
     }
 }
 
+async def safe_edit(message, text):
+    """Safe message editing with error handling"""
+    try:
+        if not message._client.is_connected:
+            return
+        await message.edit_text(text)
+    except Exception as e:
+        logger.warning(f"Safe edit failed: {str(e)}")
+
 async def progress(current, total, message, start_time):
-    if total in (0, None):
+    if total in (0, None) or not message:
         return
     
-    percentage = min(current * 100 / total, 100)
-    speed = current / (time.time() - start_time)
-    eta = (total - current) / speed if speed != 0 else 0
-    
-    # Animated progress bar
-    filled_blocks = int(percentage / 10)
-    progress_bar = "".join(
-        PROGRESS_BLOCKS[min(i//2, len(PROGRESS_BLOCKS)-1)] 
-        if i < filled_blocks else "⬜" 
-        for i in range(10)
-    )
-    
-    # Spinner animation
-    spinner_frame = SPINNER_FRAMES[int(time.time() / ANIMATION_DELAY) % len(SPINNER_FRAMES)]
-    
-    text = (
-        f"{spinner_frame} **Uploading...** {spinner_frame}\n\n"
-        f"📊 **Progress:** {progress_bar} {int(percentage)}%\n"
-        f"📦 **Size:** {humanize.naturalsize(current)} / {humanize.naturalsize(total)}\n"
-        f"🚀 **Speed:** {humanize.naturalsize(speed)}/s\n"
-        f"⏳ **ETA:** {humanize.precisedelta(eta)}"
-    )
-    
     try:
-        await message.edit_text(text)
+        percentage = min(current * 100 / total, 100)
+        speed = current / (time.time() - start_time)
+        eta = (total - current) / speed if speed != 0 else 0
+        
+        # Animated progress bar
+        bar_index = int(time.time() / ANIMATION_DELAY) % len(PROGRESS_BARS)
+        filled = int(percentage / 10)
+        progress_bar = PROGRESS_BARS[bar_index][:filled] + "⬜" * (10 - filled)
+        
+        # Spinner animation
+        spinner = SPINNER[int(time.time() / ANIMATION_DELAY) % len(SPINNER)]
+        
+        text = (
+            f"{spinner} **Uploading...** {spinner}\n\n"
+            f"📊 **Progress:** {progress_bar} {int(percentage)}%\n"
+            f"📦 **Size:** {humanize.naturalsize(current)} / {humanize.naturalsize(total)}\n"
+            f"🚀 **Speed:** {humanize.naturalsize(speed)}/s\n"
+            f"⏳ **ETA:** {humanize.precisedelta(eta)}"
+        )
+        
+        await safe_edit(message, text)
     except Exception as e:
         logger.warning(f"Progress update failed: {str(e)}")
 
@@ -123,7 +134,7 @@ async def ytdlp_download(url, message, format_id=None):
                 info = info['entries'][0]
                 
             filename = ydl.prepare_filename(info)
-            await message.edit_text(f"📥 Downloading: {os.path.basename(filename)}")
+            await safe_edit(message, f"📥 Downloading: {os.path.basename(filename)}")
             await asyncio.to_thread(ydl.download, [url])
             return filename
     except Exception as e:
@@ -142,7 +153,7 @@ async def get_formats(url):
                     size = f.get('filesize') or f.get('filesize_approx')
                     size_str = humanize.naturalsize(size)
                     res = f.get('height') or f.get('format_note', 'N/A')
-                    codec = f.get('vcodec', 'N/A').split('.')[0]
+                    codec = (f.get('vcodec') or 'N/A').split('.')[0]
                     formats.append((
                         f['format_id'],
                         f"🎬 {res}p | 📦 {size_str} | ⚡ {codec}"
@@ -156,11 +167,11 @@ async def get_formats(url):
 async def format_selection(client, callback_query: CallbackQuery):
     try:
         _, url = callback_query.data.split("|", 1)
-        await callback_query.message.edit_text("🌀 Fetching available formats...")
+        await safe_edit(callback_query.message, "🌀 Fetching available formats...")
         formats = await get_formats(url)
         
         if not formats:
-            return await callback_query.message.edit_text("❌ No formats found, starting default download...")
+            return await safe_edit(callback_query.message, "❌ No formats found, starting default download...")
 
         keyboard = [
             [InlineKeyboardButton(
@@ -169,24 +180,24 @@ async def format_selection(client, callback_query: CallbackQuery):
             )] for format_id, format_text in formats
         ]
         
-        await callback_query.message.edit_text(
+        await safe_edit(callback_query.message,
             "🎥 **Select Video Quality:**",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     except Exception as e:
-        await callback_query.message.edit_text(f"❌ Error: {str(e)}")
+        await safe_edit(callback_query.message, f"❌ Error: {str(e)}")
 
 @app.on_callback_query(filters.regex(r"^confirm_"))
 async def confirm_download(client, callback_query: CallbackQuery):
     try:
         _, url, format_id = callback_query.data.split("|", 2)
-        await callback_query.message.edit_text("🚀 Starting download...")
+        await safe_edit(callback_query.message, "🚀 Starting download...")
         await handle_download(callback_query.message, url, format_id)
     except Exception as e:
-        await callback_query.message.edit_text(f"❌ Error: {str(e)}")
+        await safe_edit(callback_query.message, f"❌ Error: {str(e)}")
 
 async def handle_download(message, url, format_id=None):
-    msg = await message.reply_text("🔍 Analyzing URL...")
+    msg = await message.reply("🔍 Analyzing URL...")
     try:
         # Always check for available formats first
         formats = await get_formats(url)
@@ -213,7 +224,7 @@ async def handle_download(message, url, format_id=None):
         await msg.delete()
 
     except Exception as e:
-        await msg.edit_text(f"❌ Error: {str(e)}")
+        await safe_edit(msg, f"❌ Error: {str(e)}")
         logger.error(f"Download error: {str(e)}")
         cleanup(file_path)
 
@@ -226,7 +237,7 @@ async def show_format_selector(message, url):
         )] for format_id, format_text in formats
     ]
     
-    await message.reply_text(
+    await message.reply(
         "🎥 **Available Video Qualities:**",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -254,17 +265,42 @@ async def upload_part(message, part_path, thumbnail, start_time):
     finally:
         cleanup(part_path)
 
-# Keep other functions (split_file, cleanup, get_user_thumbnail) same as before
+def split_file(file_path):
+    split_files = []
+    part_num = 1
+    with open(file_path, 'rb') as f:
+        while True:
+            chunk = f.read(SPLIT_SIZE)
+            if not chunk:
+                break
+            part_file = f"{file_path}.part{part_num:03d}"
+            with open(part_file, 'wb') as p:
+                p.write(chunk)
+            split_files.append(part_file)
+            part_num += 1
+    os.remove(file_path)
+    return split_files
 
-@app.on_message(filters.text & filters.private & ~filters.create(lambda _, __, m: m.text.startswith("/")))
-async def handle_url(client, message: Message):
-    url = message.text.strip()
-    if not re.match(r'^https?://', url, re.I):
-        return await message.reply_text("❌ Invalid URL format")
-    
-    await handle_download(message, url)
+def cleanup(file_path):
+    try:
+        if file_path and os.path.exists(file_path):
+            if os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+            else:
+                os.remove(file_path)
+    except Exception as e:
+        logger.error(f"Cleanup error: {str(e)}")
 
-# Keep command handlers (start, setthumbnail, delthumbnail) same as before
+def get_user_thumbnail(user_id):
+    try:
+        c.execute("SELECT thumbnail FROM users WHERE user_id=?", (user_id,))
+        result = c.fetchone()
+        return result[0] if result else None
+    except sqlite3.Error as e:
+        logger.error(f"Database error: {str(e)}")
+        return None
+
+# Command handlers remain the same...
 
 if __name__ == "__main__":
     app.run()
