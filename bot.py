@@ -8,7 +8,6 @@ import time
 from threading import Thread
 from math import floor
 from datetime import datetime
-import validators  # Added import
 
 # Telegram bot credentials
 API_ID = '20967612'
@@ -44,6 +43,36 @@ async def delete_thumbnail(client, message: Message):
         await message.reply("✅ Custom thumbnail deleted!")
     else:
         await message.reply("ℹ️ No custom thumbnail found!")
+
+# Start command
+@app.on_message(filters.command("start"))
+async def start_command(client, message: Message):
+    await message.reply(
+        "📥 Welcome to YouTube Downloader Bot!\n\n"
+        "Send me a YouTube URL to get started.\n\n"
+        "🛠 Commands:\n"
+        "/setthumbnail - Set custom thumbnail\n"
+        "/delthumbnail - Delete thumbnail\n"
+        "/help - Show help information"
+    )
+
+# Help command
+@app.on_message(filters.command("help"))
+async def help_command(client, message: Message):
+    await message.reply(
+        "ℹ️ **Bot Help**\n\n"
+        "1. Send any YouTube URL\n"
+        "2. Choose desired format\n"
+        "3. Wait for download & upload\n\n"
+        "🖼 Thumbnail Support:\n"
+        "- Reply to an image with /setthumbnail\n"
+        "- Use /delthumbnail to remove\n\n"
+        "⚡ Features:\n"
+        "- 2GB+ file splitting\n"
+        "- Progress tracking\n"
+        "- Quality selection\n"
+        "- Audio extraction"
+    )
 
 # Progress handler for downloads
 async def download_progress_hook(d, message, start_time):
@@ -96,7 +125,7 @@ def download_media(url, format_id, message):
             'quiet': True,
         }
 
-        with yt_dlp.YoutubeDL(ydp_opts) as ydl:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             file_path = ydl.prepare_filename(info)
             
@@ -190,22 +219,11 @@ async def handle_format_selection(client, callback_query: CallbackQuery):
     Thread(target=process_media, args=(url, format_id, callback_query.message)).start()
 
 # URL handler with vertical quality buttons
-@app.on_message(filters.text & filters.private)
+@app.on_message(filters.text & filters.private & ~filters.command)
 async def handle_url(client, message: Message):
-    # Skip processing for bot commands
-    if message.text.startswith('/'):
-        return
-
     url = message.text
-    
-    # Add URL validation
     try:
-        # Check if URL is valid before processing
-        if not validators.url(url):
-            await message.reply("❌ Invalid URL. Please send a valid YouTube or supported URL.")
-            return
-
-        # Existing format extraction code
+        # Get available formats
         ydl_opts = {'quiet': True, 'noplaylist': True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -234,37 +252,6 @@ async def handle_url(client, message: Message):
     except Exception as e:
         await message.reply(f"❌ Error: {str(e)}")
 
-# Start command
-@app.on_message(filters.command("start"))
-async def start_command(client, message: Message):
-    await message.reply(
-        "📥 Welcome to YouTube Downloader Bot!\n\n"
-        "Send me a YouTube URL to get started.\n\n"
-        "🛠 Commands:\n"
-        "/setthumbnail - Set custom thumbnail\n"
-        "/delthumbnail - Delete thumbnail\n"
-        "/help - Show help information"
-    )
-
-# Help command
-@app.on_message(filters.command("help"))
-async def help_command(client, message: Message):
-    await message.reply(
-        "ℹ️ **Bot Help**\n\n"
-        "1. Send any YouTube URL\n"
-        "2. Choose desired format\n"
-        "3. Wait for download & upload\n\n"
-        "🖼 Thumbnail Support:\n"
-        "- Reply to an image with /setthumbnail\n"
-        "- Use /delthumbnail to remove\n\n"
-        "⚡ Features:\n"
-        "- 2GB+ file splitting\n"
-        "- Progress tracking\n"
-        "- Quality selection\n"
-        "- Audio extraction"
-    )
-
 if __name__ == "__main__":
     print("Bot Started!")
     app.run()
-    
