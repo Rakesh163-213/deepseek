@@ -41,20 +41,19 @@ DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # Animation configurations
-PROGRESS_BLOCKS = ["🟥", "🟧", "🟨", "🟩"]
-SPINNER = ["🌀", "🌪️", "🌊", "🌌", "🌠", "✨"]
-ANIMATION_DELAY = 0.5
+PROGRESS_BLOCKS = ["█", "▓", "▒", "░"]
+SPINNER_FRAMES = ["⣾","⣽","⣻","⢿","⡿","⣟","⣯","⣷"]
+ANIMATION_DELAY = 0.3
 
-# Enhanced yt-dlp configuration
+# Universal download configuration
 YDL_OPTS = {
-    'noplaylist': True,
     'quiet': True,
     'no_warnings': False,
     'force_generic_extractor': True,
     'cookiefile': 'cookies.txt',
+    'concurrent_fragment_downloads': 10,
     'nocheckcertificate': True,
     'referer': 'https://www.google.com/',
-    'concurrent_fragment_downloads': 8,
     'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36',
         'Accept': '*/*',
@@ -64,44 +63,65 @@ YDL_OPTS = {
     }
 }
 
-async def safe_edit(message, text):
-    """Safe message editing with enhanced error handling"""
-    try:
-        if message and not message.empty:
-            await message.edit_text(text)
-    except Exception as e:
-        logger.warning(f"Safe edit failed: {str(e)}")
-
 async def progress(current, total, message, start_time):
-    if total in (0, None) or not message:
-        return
-    
+    """Universal progress handler with guaranteed visibility"""
     try:
+        if total in (0, None) or not message:
+            return
+
         percentage = min(current * 100 / total, 100)
         speed = current / (time.time() - start_time)
         eta = (total - current) / speed if speed != 0 else 0
         
-        # Animated progress bar
-        bar_index = int(time.time() / ANIMATION_DELAY) % len(PROGRESS_BLOCKS)
-        filled = int(percentage / 10)
-        progress_bar = (PROGRESS_BLOCKS[bar_index] * filled) + "⬜" * (10 - filled)
+        # Dynamic progress bar
+        filled = int(25 * percentage // 100)
+        bar = "█" * filled + "░" * (25 - filled)
         
         # Spinner animation
-        spinner = SPINNER[int(time.time() / ANIMATION_DELAY) % len(SPINNER)]
+        spinner = SPINNER_FRAMES[int(time.time() / ANIMATION_DELAY) % len(SPINNER_FRAMES)]
         
         text = (
-            f"{spinner} **Uploading...** {spinner}\n\n"
-            f"📊 **Progress:** {progress_bar} {int(percentage)}%\n"
-            f"📦 **Size:** {humanize.naturalsize(current)} / {humanize.naturalsize(total)}\n"
-            f"🚀 **Speed:** {humanize.naturalsize(speed)}/s\n"
-            f"⏳ **ETA:** {humanize.precisedelta(eta)}"
+            f"{spinner} **Upload Progress** {spinner}\n\n"
+            f"```[{bar}] {percentage:.1f}%```\n"
+            f"**Size:** {humanize.naturalsize(current)} / {humanize.naturalsize(total)}\n"
+            f"**Speed:** {humanize.naturalsize(speed)}/s\n"
+            f"**ETA:** {humanize.precisedelta(eta)}"
         )
         
-        await safe_edit(message, text)
+        await message.edit_text(text)
     except Exception as e:
-        logger.warning(f"Progress update failed: {str(e)}")
+        logger.warning(f"Progress update safe error: {str(e)}")
+
+async def universal_download(url, message, format_id=None):
+    """Universal download handler for all websites"""
+    try:
+        ydl_opts = YDL_OPTS.copy()
+        if format_id:
+            ydl_opts['format'] = format_id
+            
+        with YoutubeDL(ydl_opts) as ydl:
+            # Force extract info for all URLs
+            info = await asyncio.to_thread(ydl.extract_info, url, download=False)
+            if not info:
+                raise Exception("Failed to extract URL information")
+                
+            # Handle playlists and multi-format content
+            if 'entries' in info:
+                info = info['entries'][0]
+                
+            filename = ydl.prepare_filename(info)
+            await message.edit_text(f"📥 Downloading: {os.path.basename(filename)}")
+            ydl.download([url])
+            return filename
+    except Exception as e:
+        # Fallback to direct download if yt-dlp fails
+        try:
+            return await direct_download(url, message)
+        except Exception as direct_error:
+            raise Exception(f"Download failed: {str(e)} | Fallback failed: {str(direct_error)}")
 
 async def direct_download(url, message):
+    """Direct download fallback"""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
@@ -111,61 +131,47 @@ async def direct_download(url, message):
                 with open(filepath, 'wb') as f:
                     async for chunk in response.content.iter_chunked(1024*1024):
                         f.write(chunk)
-                
                 return filepath
     except Exception as e:
         raise Exception(f"Direct download failed: {str(e)}")
 
-async def ytdlp_download(url, message, format_id=None):
-    try:
-        ydl_opts = YDL_OPTS.copy()
-        if format_id:
-            ydl_opts['format'] = format_id
-            
-        with YoutubeDL(ydl_opts) as ydl:
-            info = await asyncio.to_thread(ydl.extract_info, url, download=False)
-            if 'entries' in info:
-                info = info['entries'][0]
-                
-            filename = ydl.prepare_filename(info)
-            await safe_edit(message, f"📥 Downloading: {os.path.basename(filename)}")
-            await asyncio.to_thread(ydl.download, [url])
-            return filename
-    except Exception as e:
-        raise Exception(f"YT-DLP error: {str(e)}")
-
 async def get_formats(url):
+    """Universal format detector"""
     try:
         with YoutubeDL(YDL_OPTS) as ydl:
             info = await asyncio.to_thread(ydl.extract_info, url, download=False)
+            if not info:
+                return []
+                
             if 'entries' in info:
                 info = info['entries'][0]
                 
             formats = []
             for f in info.get('formats', []):
-                if f.get('filesize') or f.get('filesize_approx'):
-                    size = f.get('filesize') or f.get('filesize_approx')
-                    size_str = humanize.naturalsize(size)
+                try:
+                    size = f.get('filesize') or f.get('filesize_approx') or 0
                     res = f.get('height') or f.get('format_note', 'N/A')
                     codec = (f.get('vcodec') or 'N/A').split('.')[0]
                     formats.append((
                         f['format_id'],
-                        f"🎬 {res}p | 📦 {size_str} | ⚡ {codec}"
+                        f"🎬 {res}p | 📦 {humanize.naturalsize(size)} | ⚡ {codec}"
                     ))
-            return sorted(formats, key=lambda x: x[1], reverse=True)[:8]
+                except:
+                    continue
+            return sorted(formats, key=lambda x: x[1], reverse=True)[:10]
     except Exception as e:
-        logger.error(f"Format fetch error: {str(e)}")
+        logger.error(f"Universal format error: {str(e)}")
         return []
 
 @app.on_callback_query(filters.regex(r"^format_"))
 async def format_selection(client, callback_query: CallbackQuery):
     try:
         _, url = callback_query.data.split("|", 1)
-        await safe_edit(callback_query.message, "🌀 Fetching available formats...")
+        await callback_query.message.edit_text("🌀 Fetching available formats...")
         formats = await get_formats(url)
         
         if not formats:
-            return await safe_edit(callback_query.message, "❌ No formats found, starting default download...")
+            return await callback_query.message.edit_text("❌ No formats found, starting default download...")
 
         keyboard = [
             [InlineKeyboardButton(
@@ -174,21 +180,21 @@ async def format_selection(client, callback_query: CallbackQuery):
             )] for format_id, format_text in formats
         ]
         
-        await safe_edit(callback_query.message,
+        await callback_query.message.edit_text(
             "🎥 **Select Video Quality:**",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     except Exception as e:
-        await safe_edit(callback_query.message, f"❌ Error: {str(e)}")
+        await callback_query.message.edit_text(f"❌ Error: {str(e)}")
 
 @app.on_callback_query(filters.regex(r"^confirm_"))
 async def confirm_download(client, callback_query: CallbackQuery):
     try:
         _, url, format_id = callback_query.data.split("|", 2)
-        await safe_edit(callback_query.message, "🚀 Starting download...")
+        await callback_query.message.edit_text("🚀 Starting download...")
         await handle_download(callback_query.message, url, format_id)
     except Exception as e:
-        await safe_edit(callback_query.message, f"❌ Error: {str(e)}")
+        await callback_query.message.edit_text(f"❌ Error: {str(e)}")
 
 async def handle_download(message, url, format_id=None):
     msg = await message.reply("🔍 Analyzing URL...")
@@ -199,10 +205,7 @@ async def handle_download(message, url, format_id=None):
         if formats and not format_id:
             return await show_format_selector(message, url)
         
-        if re.search(r'\.(mp4|mkv|avi|mov|webm|m3u8|ts)(\?|$)', url, re.I):
-            file_path = await direct_download(url, msg)
-        else:
-            file_path = await ytdlp_download(url, msg, format_id)
+        file_path = await universal_download(url, msg, format_id)
 
         # File validation
         if not os.path.exists(file_path):
@@ -220,7 +223,7 @@ async def handle_download(message, url, format_id=None):
         await msg.delete()
 
     except Exception as e:
-        await safe_edit(msg, f"❌ Error: {str(e)}")
+        await msg.edit_text(f"❌ Error: {str(e)}")
         logger.error(f"Download error: {str(e)}")
         cleanup(file_path)
         # Delete error message after 30 seconds
@@ -345,7 +348,6 @@ async def del_thumbnail(client, message):
     c.execute("DELETE FROM users WHERE user_id=?", (user_id,))
     conn.commit()
     await message.reply_text("✅ Thumbnail deleted successfully!")
-
 
 @app.on_message(filters.text & filters.private & ~filters.create(lambda _, __, m: m.text.startswith("/")))
 async def handle_url(client, message: Message):
