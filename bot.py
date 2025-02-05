@@ -1,145 +1,146 @@
-import os
-import yt_dlp
-import aiohttp
-import time
-import asyncio
 from pyrogram import Client, filters
-from humanize import naturalsize
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+import yt_dlp
+import os
+import ffmpeg
+import shutil
+from threading import Thread
+import time
 
-# Replace with your API credentials
-api_id = 20967612
-api_hash = "be9356a3644d1e6212e72d93530b434f"
-bot_token = "7535985391:AAEfjYY3Z79OvPgQCn3rKZ192jAED9dzeHQ"
 
-app = Client("my_uploader", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
+# Telegram bot credentials
+API_ID = 'your_api_id'
+API_HASH = 'your_api_hash'
+BOT_TOKEN = 'your_bot_token'
 
-# Increase the chunk size to 1MB (1024 * 1024 bytes)
-CHUNK_SIZE = 1024 * 1024  # 1MB
 
-async def download_file(url, filename, msg):
-    os.makedirs("downloads", exist_ok=True)  # Ensure downloads directory exists
+app = Client("url_uploader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            if response.status != 200:
-                await msg.edit(f"❌ Failed to download (HTTP {response.status})")
-                return
-            
-            total_size = int(response.headers.get('content-length', 0))
-            downloaded = 0
-            start_time = time.time()
-            
-            try:
-                with open(filename, 'wb') as f:
-                    async for chunk in response.content.iter_chunked(CHUNK_SIZE):
-                        if not chunk:
-                            await msg.edit("❌ Received an empty data chunk. Retrying...")
-                            return
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        
-                        elapsed = time.time() - start_time
-                        if elapsed >= 1 or downloaded == total_size:
-                            speed = downloaded / elapsed if elapsed > 0 else 0
-                            await update_download_progress(msg, downloaded, total_size, speed)
-                            start_time = time.time()
-            except Exception as e:
-                await msg.edit(f"❌ Error writing file: {str(e)}")
+# Command to set custom thumbnail
+@app.on_message(filters.command("setthumbnail"))
+async def set_thumbnail(client, message: Message):
+    if message.reply_to_message and message.reply_to_message.photo:
+        # Download the photo as thumbnail
+        photo = await message.reply_to_message.download()
+        # Save the photo to a thumbnail directory
+        shutil.move(photo, 'thumbnail.jpg')
+        await message.reply("Custom thumbnail set successfully!")
 
-async def update_download_progress(msg, downloaded, total, speed):
-    if msg:
-        progress = f"📥 Downloading:\n"
-        progress += f"┌ {naturalsize(downloaded)} / {naturalsize(total)}\n"
-        progress += f"├ {downloaded/total*100:.1f}% Complete\n"
-        progress += f"└ Speed: {naturalsize(speed)}/s"
-        await msg.edit(progress)
 
-async def upload_with_progress(client, msg, filename):
-    file_size = os.path.getsize(filename)
-    uploaded = 0
-    start_time = time.time()
+# Command to delete custom thumbnail
+@app.on_message(filters.command("delthumbnail"))
+async def delete_thumbnail(client, message: Message):
+    if os.path.exists('thumbnail.jpg'):
+        os.remove('thumbnail.jpg')
+        await message.reply("Custom thumbnail deleted!")
+    else:
+        await message.reply("No custom thumbnail found!")
 
-    async def progress(current, total, msg):
-        nonlocal uploaded, start_time
-        uploaded = current
-        elapsed = time.time() - start_time
-        speed = current / elapsed if elapsed > 0 else 0
-        
-        progress_text = f"📤 Uploading:\n"
-        progress_text += f"┌ {naturalsize(current)} / {naturalsize(total)}\n"
-        progress_text += f"├ {current/total*100:.1f}% Complete\n"
-        progress_text += f"└ Speed: {naturalsize(speed)}/s"
-        
-        if msg:
-            await msg.edit(progress_text)
-        start_time = time.time()
 
-    await client.send_document(
-        chat_id=msg.chat.id,
-        document=filename,
-        force_document=True,
-        progress=progress,  
-        progress_args=(msg,)  
-    )
-
-@app.on_message(filters.command("start"))
-async def start(client, message):
-    await message.reply("Send me a URL to upload the file (up to 2GB)!")
-
-@app.on_message(filters.text & ~filters.command("start"))
-async def handle_url(client, message):
-    url = message.text
-    msg = None
-    local_path = None
-    
+# Download and upload file function
+def download_and_upload(url, chat_id, message):
     try:
-        # Extract file info
+        # Extract video info using yt-dlp
         ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'format': 'best',
+            'noplaylist': True,
+            'progress_hooks': [progress_hook],
+            'outtmpl': 'downloads/%(title)s.%(ext)s'
         }
-        
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info_dict = ydl.extract_info(url, download=False)
-            file_size = info_dict.get('filesize', 0) or 0
-            if file_size > 2 * 1024 * 1024 * 1024:
-                await message.reply("❌ File size exceeds 2GB limit.")
-                return
-            
-            filename = info_dict.get('title', 'file').replace(' ', '_')
-            if 'ext' in info_dict:
-                filename += f".{info_dict['ext']}"
-            else:
-                filename += ".mp4"  # Default to mp4 if extension is not available
-            filename = f"downloads/{filename}"
-
-        # Start download
-        msg = await message.reply("🚀 Starting download...")
-        await download_file(url, filename, msg)
-
-        # Verify final file size
-        actual_size = os.path.getsize(filename)
-        if actual_size > 2 * 1024 * 1024 * 1024:
-            await message.reply("❌ Downloaded file exceeds 2GB limit.")
-            os.remove(filename)
-            return
-
-        # Start upload
-        await msg.edit("🚀 Starting upload...")
-        await upload_with_progress(client, msg, filename)
-
-        # Cleanup
-        os.remove(filename)
-        await msg.delete()
+            info = ydl.extract_info(url, download=True)
+            video_path = f"downloads/{info['title']}.{info['ext']}"
+        
+        # If the video is larger than 2GB, split it
+        if os.path.getsize(video_path) > 2 * 1024 * 1024 * 1024:
+            video_path = split_video(video_path)
+        
+        # Send the video to Telegram
+        thumbnail = 'thumbnail.jpg' if os.path.exists('thumbnail.jpg') else None
+        app.send_video(chat_id, video_path, caption=info['title'], thumb=thumbnail)
+        
+        # Clean up the downloaded file
+        os.remove(video_path)
 
     except Exception as e:
-        error_msg = f"❌ Error: {str(e)}"
-        if msg:
-            await msg.edit(error_msg)
-        else:
-            await message.reply(error_msg)
-        if local_path and os.path.exists(local_path):
-            os.remove(local_path)
+        app.send_message(chat_id, f"Error: {str(e)}")
 
+
+# Progress hook for downloading
+def progress_hook(d):
+    if d['status'] == 'downloading':
+        total_size = d.get('total_bytes', 0)
+        downloaded = d.get('downloaded_bytes', 0)
+        speed = d.get('download_speed', 0)
+        percent = (downloaded / total_size) * 100 if total_size else 0
+
+        # Send progress to user (you can also update a message or use inline keyboard)
+        print(f"Progress: {percent:.2f}% Downloaded: {downloaded / 1024 / 1024:.2f} MB, Speed: {speed / 1024:.2f} KB/s")
+
+    elif d['status'] == 'finished':
+        print(f"Download finished: {d['filename']}")
+
+
+# Split video if larger than 2GB
+def split_video(input_file):
+    output_dir = 'downloads/split_videos'
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Use ffmpeg to split the video
+    output_file = os.path.join(output_dir, "part_%03d.mp4")
+    ffmpeg.input(input_file).output(output_file, f='segment', segment_time='1800', segment_format='mp4').run()
+
+    # Clean up the original video
+    os.remove(input_file)
+
+    # Return the path of the first part to be uploaded
+    return os.path.join(output_dir, "part_001.mp4")
+
+
+# Handling URL submissions from users
+@app.on_message(filters.text & filters.private)
+async def handle_url(client, message: Message):
+    url = message.text
+
+    # Asking for quality selection
+    await message.reply("Fetching video formats... Please wait.")
+
+    ydl_opts = {
+        'format': 'best',
+        'noplaylist': True,
+        'extract_flat': True,
+        'outtmpl': 'downloads/%(title)s.%(ext)s'
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(url, download=False)
+            formats = info.get('formats', [info])
+
+            buttons = []
+            for f in formats:
+                buttons.append(
+                    InlineKeyboardButton(f"{f['format_id']} - {f['height'] if 'height' in f else 'N/A'}p", callback_data=f['format_id'])
+                )
+
+            markup = InlineKeyboardMarkup([buttons])
+            await message.reply("Choose the quality of the video:", reply_markup=markup)
+
+            # Download video in the selected quality
+            # Once user selects, handle video download and upload
+            Thread(target=download_and_upload, args=(url, message.chat.id, message)).start()
+
+        except Exception as e:
+            await message.reply(f"Error fetching video info: {str(e)}")
+
+
+@app.on_callback_query()
+async def handle_quality_selection(client, callback_query):
+    # Handle the quality selection here and download accordingly
+    format_id = callback_query.data
+    await callback_query.answer(f"Selected quality: {format_id}")
+
+
+# Run the bot
 app.run()
