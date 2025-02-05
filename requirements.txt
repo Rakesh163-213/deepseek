@@ -1,3 +1,4 @@
+validators
 pyrogram
 yt-dlp
 flask
