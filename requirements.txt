@@ -1,9 +1,6 @@
 pyrogram
-aiohttp
-tqdm
 yt-dlp
-humanize
 flask
 gunicorn
-asyncio
 tgcrypto
+python-ffmpeg
