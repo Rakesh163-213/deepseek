@@ -69,14 +69,15 @@ async def progress(current, total, message, start_time):
     eta = (total - current) / speed if speed != 0 else 0
     
     progress_bar = "".join(
-        "⬢" if i < int(percentage / 10) else "⬡" for i in range(10)
+        "🟥" if i < int(percentage / 10) else "⬜" for i in range(10)
     )
     
     text = (
-        f"<b>🚀 Progress:</b> {progress_bar} {int(percentage)}%\n"
-        f"<b>📦 Size:</b> {humanize.naturalsize(current)} / {humanize.naturalsize(total)}\n"
-        f"<b>⚡ Speed:</b> {humanize.naturalsize(speed)}/s\n"
-        f"<b>⏳ ETA:</b> {humanize.precisedelta(eta)}"
+        f"🌠 **Uploading...** 🌠\n\n"
+        f"📊 **Progress:** {progress_bar} {int(percentage)}%\n"
+        f"📦 **Size:** {humanize.naturalsize(current)} / {humanize.naturalsize(total)}\n"
+        f"🚀 **Speed:** {humanize.naturalsize(speed)}/s\n"
+        f"⏳ **ETA:** {humanize.precisedelta(eta)}"
     )
     
     try:
@@ -155,7 +156,7 @@ async def format_selection(client, callback_query: CallbackQuery):
             ])
             
         await callback_query.message.edit_text(
-            "🎥 Select Video Quality:",
+            "🎥 **Select Video Quality:**",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     except Exception as e:
@@ -219,7 +220,7 @@ async def show_format_selector(message, url):
         ])
     
     await message.reply_text(
-        "🎥 Multiple formats available:",
+        "🎥 **Multiple formats available:**",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
