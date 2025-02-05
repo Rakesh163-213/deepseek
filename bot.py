@@ -26,7 +26,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Database setup with connection pooling
+# Database setup
 conn = sqlite3.connect('userdata.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS users
@@ -41,13 +41,8 @@ DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # Animation configurations
-PROGRESS_BARS = [
-    "🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥",
-    "🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧",
-    "🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨",
-    "🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩"
-]
-SPINNER = ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"]
+PROGRESS_BLOCKS = ["🟥", "🟧", "🟨", "🟩"]
+SPINNER = ["🌀", "🌪️", "🌊", "🌌", "🌠", "✨"]
 ANIMATION_DELAY = 0.5
 
 # Enhanced yt-dlp configuration
@@ -70,11 +65,10 @@ YDL_OPTS = {
 }
 
 async def safe_edit(message, text):
-    """Safe message editing with error handling"""
+    """Safe message editing with enhanced error handling"""
     try:
-        if not message._client.is_connected:
-            return
-        await message.edit_text(text)
+        if message and not message.empty:
+            await message.edit_text(text)
     except Exception as e:
         logger.warning(f"Safe edit failed: {str(e)}")
 
@@ -88,9 +82,9 @@ async def progress(current, total, message, start_time):
         eta = (total - current) / speed if speed != 0 else 0
         
         # Animated progress bar
-        bar_index = int(time.time() / ANIMATION_DELAY) % len(PROGRESS_BARS)
+        bar_index = int(time.time() / ANIMATION_DELAY) % len(PROGRESS_BLOCKS)
         filled = int(percentage / 10)
-        progress_bar = PROGRESS_BARS[bar_index][:filled] + "⬜" * (10 - filled)
+        progress_bar = (PROGRESS_BLOCKS[bar_index] * filled) + "⬜" * (10 - filled)
         
         # Spinner animation
         spinner = SPINNER[int(time.time() / ANIMATION_DELAY) % len(SPINNER)]
@@ -221,12 +215,20 @@ async def handle_download(message, url, format_id=None):
         # Upload to user
         thumbnail = get_user_thumbnail(message.from_user.id)
         await upload_file(message, file_path, thumbnail)
+        
+        # Only delete message after successful upload
         await msg.delete()
 
     except Exception as e:
         await safe_edit(msg, f"❌ Error: {str(e)}")
         logger.error(f"Download error: {str(e)}")
         cleanup(file_path)
+        # Delete error message after 30 seconds
+        await asyncio.sleep(30)
+        try:
+            await msg.delete()
+        except:
+            pass
 
 async def show_format_selector(message, url):
     formats = await get_formats(url)
@@ -300,22 +302,34 @@ def get_user_thumbnail(user_id):
         logger.error(f"Database error: {str(e)}")
         return None
 
-# Command handlers remain the 
+# Command handlers
 @app.on_message(filters.command(["start"]))
 async def start(client, message):
     await message.reply_text(
-        "🌟 **Advanced URL Upload Bot**\n\n"
-        "Send any HTTP/HTTPS link to upload content!\n\n"
+        "🌟 **Welcome to the Advanced URL Upload Bot!** 🌟\n\n"
+        "Send me any HTTP/HTTPS link to upload content!\n\n"
         "🔧 **Commands:**\n"
-        "/setthumbnail - Set custom thumbnail\n"
-        "/delthumbnail - Delete thumbnail\n"
+        "/start - Show this message\n"
+        "/setthumbnail - Set a custom thumbnail\n"
+        "/delthumbnail - Delete your thumbnail\n"
         "/help - Show help guide"
+    )
+
+@app.on_message(filters.command(["help"]))
+async def help(client, message):
+    await message.reply_text(
+        "📚 **Help Guide**\n\n"
+        "1. Send any HTTP/HTTPS link to upload content.\n"
+        "2. Use /setthumbnail to set a custom thumbnail.\n"
+        "3. Use /delthumbnail to remove your thumbnail.\n"
+        "4. For direct links, the bot will automatically download and upload.\n"
+        "5. For supported sites, you'll get quality options to choose from."
     )
 
 @app.on_message(filters.command(["setthumbnail"]))
 async def set_thumbnail(client, message):
-    user_id = message.from_user.id
     if message.reply_to_message and message.reply_to_message.photo:
+        user_id = message.from_user.id
         thumbnail_path = f"thumbnails/{user_id}.jpg"
         os.makedirs(os.path.dirname(thumbnail_path), exist_ok=True)
         await message.reply_to_message.download(thumbnail_path)
@@ -332,7 +346,7 @@ async def del_thumbnail(client, message):
     conn.commit()
     await message.reply_text("✅ Thumbnail deleted successfully!")
 
-@app.on_message(filters.text & filters.private & ~filters.create(lambda _, __, m: m.text.startswith("/")))
+@app.on_message(filters.text & filters.private & ~filters.command)
 async def handle_url(client, message: Message):
     url = message.text.strip()
     if not re.match(r'^https?://', url, re.I):
