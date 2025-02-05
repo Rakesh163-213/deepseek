@@ -300,7 +300,45 @@ def get_user_thumbnail(user_id):
         logger.error(f"Database error: {str(e)}")
         return None
 
-# Command handlers remain the same...
+# Command handlers remain the 
+@app.on_message(filters.command(["start"]))
+async def start(client, message):
+    await message.reply_text(
+        "🌟 **Advanced URL Upload Bot**\n\n"
+        "Send any HTTP/HTTPS link to upload content!\n\n"
+        "🔧 **Commands:**\n"
+        "/setthumbnail - Set custom thumbnail\n"
+        "/delthumbnail - Delete thumbnail\n"
+        "/help - Show help guide"
+    )
+
+@app.on_message(filters.command(["setthumbnail"]))
+async def set_thumbnail(client, message):
+    user_id = message.from_user.id
+    if message.reply_to_message and message.reply_to_message.photo:
+        thumbnail_path = f"thumbnails/{user_id}.jpg"
+        os.makedirs(os.path.dirname(thumbnail_path), exist_ok=True)
+        await message.reply_to_message.download(thumbnail_path)
+        c.execute("INSERT OR REPLACE INTO users VALUES (?, ?)", (user_id, thumbnail_path))
+        conn.commit()
+        await message.reply_text("✅ Thumbnail set successfully!")
+    else:
+        await message.reply_text("❌ Please reply to a photo to set as thumbnail")
+
+@app.on_message(filters.command(["delthumbnail"]))
+async def del_thumbnail(client, message):
+    user_id = message.from_user.id
+    c.execute("DELETE FROM users WHERE user_id=?", (user_id,))
+    conn.commit()
+    await message.reply_text("✅ Thumbnail deleted successfully!")
+
+@app.on_message(filters.text & filters.private & ~filters.create(lambda _, __, m: m.text.startswith("/")))
+async def handle_url(client, message: Message):
+    url = message.text.strip()
+    if not re.match(r'^https?://', url, re.I):
+        return await message.reply_text("❌ Invalid URL format")
+    
+    await handle_download(message, url)
 
 if __name__ == "__main__":
     app.run()
