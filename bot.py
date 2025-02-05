@@ -219,7 +219,7 @@ async def handle_format_selection(client, callback_query: CallbackQuery):
     Thread(target=process_media, args=(url, format_id, callback_query.message)).start()
 
 # URL handler with vertical quality buttons
-@app.on_message(filters.text & filters.private & ~filters.command)
+@app.on_message(filters.text & filters.private & ~filters.create(lambda _, __, m: m.text.startswith("/")))
 async def handle_url(client, message: Message):
     url = message.text
     try:
